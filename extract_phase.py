@@ -1,137 +1,101 @@
-import pymongo
-import pandas as pd
 import psycopg2
+import pymongo
 import boto3
 import io
-from config import *
-
+import pandas as pd
 
 class DataExtractor:
-    def __init__(self):
-        self.mongo_client = None
-        self.mongo_collection = None
+    def __init__(
+        self,
+        redshift_params,
+        mongo_connection_string,
+        mongo_database,
+        mongo_collection,
+        s3_bucket_name,
+        aws_access_key_id,
+        aws_secret_access_key,
+        etl_job_name,
+        logger,
+        msg_text
+    ):
+        # Set up all the connections and config needed for extraction
+        self.redshift_params = redshift_params
+        self.mongo_connection_string = mongo_connection_string
+        self.mongo_database = mongo_database
+        self.mongo_collection = mongo_collection
+        self.s3_bucket_name = s3_bucket_name
+        self.aws_access_key_id = aws_access_key_id
+        self.aws_secret_access_key = aws_secret_access_key
+        self.etl_job_name = etl_job_name
+        self.logger = logger
+        self.msg_text = msg_text
 
-    def extract_last_updated_date(self, job_name):
-        logger.info(f"Extracting last_updated_at for job: {job_name}")
+    def extract_last_updated_date(self):
+        # Get the last time we updated this job from Redshift metadata
+        self.logger.info(f"Extracting last_updated_at for job: {self.etl_job_name}")
         try:
-            conn = psycopg2.connect(**REDSHIFT_PARAMS)
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT last_updated_at 
-                FROM  interns.etl_job_metadata
-                WHERE job_name = %s
-            """,
-                (job_name,),
-            )
-            result = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            logger.info(
-                f"Last updated date for {job_name}: {result[0] if result else None}"
-            )
-            return result[0] if result else None
+            with psycopg2.connect(**self.redshift_params) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT last_updated_at 
+                        FROM interns.etl_job_metadata
+                        WHERE job_name = %s
+                        """,
+                        (self.etl_job_name,),
+                    )
+                    result = cursor.fetchone()
+                    extracted_date = result[0] if result else None
+                    self.logger.info(f"Last updated date: {extracted_date}")
+                    return extracted_date
         except Exception as e:
-            logger.error(f"[{job_name}] Error extracting last_updated_at: {str(e)}")
+            self.logger.error(f"Error extracting last_updated_at: {e}")
             raise
 
     def extract_mongo_data(self, last_updated_date):
-        logger.info("Starting MongoDB data extraction")
+        # Pull new or updated records from MongoDB since the last update
+        self.logger.info("Starting MongoDB data extraction")
         try:
-            # Establish MongoDB connection
-            self.mongo_client = pymongo.MongoClient(MONGO_CONNECTION_STRING)
-            mongo_db = self.mongo_client[MONGO_DATABASE]
-            self.mongo_collection = mongo_db[MONGO_COLLECTION]
-
-            # Query for records updated since last ETL run
-            query = {"updatedAt": {"$gte": last_updated_date}}
-            cursor = list(self.mongo_collection.find(query))
-
-            df = pd.DataFrame(cursor)
-
-            logger.info(f"Extracted {len(cursor)} records from MongoDB")
-            return cursor, df
-
-        except Exception as query_error:
-            error_message = (
-                f"{MSG_TEXT}: deliveryAttempts, mongo Query Error: {str(query_error)}"
-            )
-            logger.error(error_message)
+            client = pymongo.MongoClient(self.mongo_connection_string)
+            db = client[self.mongo_database]
+            collection = db[self.mongo_collection]
+            query = {"updatedAt": {"$gte": last_updated_date}} if last_updated_date else {}
+            cursor = list(collection.find(query))
+            self.logger.info(f"Extracted {len(cursor)} records from MongoDB")
+            return cursor
+        except Exception as e:
+            error_message = f"{self.msg_text}: MongoDB query error: {e}"
+            self.logger.error(error_message)
             raise
 
-    def from_mongo_to_s3(self, cursor):
-        logger.info("Uploading DataFrame to S3")
+    def upload_to_s3(self, data):
+        # Save the extracted data as a CSV and upload to S3 for downstream processing
+        self.logger.info("Uploading DataFrame to S3")
         try:
-            df = pd.DataFrame(cursor)
-
-            # Convert DataFrame to CSV in memory buffer
-            csv_buffer = icsv_buffer = io.BytesIO()
+            df = pd.DataFrame(data)
+            csv_buffer = io.BytesIO()
             df.to_csv(csv_buffer, index=False)
             csv_buffer.seek(0)
-            
-            # Initialize S3 client and upload
+
             s3 = boto3.client(
                 "s3",
-                aws_access_key_id=AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+                aws_access_key_id=self.aws_access_key_id,
+                aws_secret_access_key=self.aws_secret_access_key,
             )
-            bucket_name = S3_BUCKET_NAME
-            s3.upload_fileobj(csv_buffer, bucket_name, "data/delivery_attempts.csv")
-            logger.info("DataFrame uploaded to S3 successfully")
-
+            s3.upload_fileobj(csv_buffer, self.s3_bucket_name, "data/delivery_attempts.csv")
+            self.logger.info("Upload to S3 successful")
         except Exception as e:
-            error_message = f"{MSG_TEXT}: Error uploading data to S3: {str(e)}"
-            print(error_message)
-            raise
-
-    def extract_s3_data(self):
-        logger.info("Downloading data from S3")
-        try:
-            s3 = boto3.client(
-                "s3",
-                aws_access_key_id=AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            )
-
-            # Download CSV from S3 into memory buffer
-            csv_buffer = io.BytesIO()
-            s3.download_fileobj(
-                S3_BUCKET_NAME, "data/delivery_attempts.csv", csv_buffer
-            )
-
-            # Reset buffer position and read as DataFrame
-            csv_buffer.seek(0)
-            df = pd.read_csv(csv_buffer)
-
-            logger.info(f"Successfully downloaded {len(df)} records from S3")
-            return df
-
-        except Exception as e:
-            logger.error(f"{MSG_TEXT}: Error extracting data from S3: {str(e)}")
+            error_message = f"{self.msg_text}: Error uploading to S3: {e}"
+            self.logger.error(error_message)
             raise
 
     def run_extraction(self):
-        logger.info("Starting extraction phase")
+        # Main entry point for the extraction phase
         try:
-            # Get the last updated date for the ETL job
-            last_updated_date = self.extract_last_updated_date(ETL_JOB_NAME)
-
-            # Extract new/updated records from MongoDB
-            cursor, mongo_df = self.extract_mongo_data(last_updated_date)
-
-            # Upload to S3 as intermediate storage
-            self.from_mongo_to_s3(cursor)
-            s3_df = self.extract_s3_data()
-
-            logger.info("Extraction phase completed successfully")
-            return cursor, s3_df, last_updated_date
-
+            extracted_date = self.extract_last_updated_date()
+            mongo_data = self.extract_mongo_data(extracted_date)
+            self.upload_to_s3(mongo_data)
+            self.logger.info("Extraction phase completed successfully")
         except Exception as e:
-            error_message = f"{MSG_TEXT}: Extraction phase failed: {str(e)}"
-            logger.error(error_message)
+            self.logger.error(f"{self.msg_text}: Extraction failed: {e}")
             raise
-
-
-if __name__ == "__main__":
-    extractor = DataExtractor()
-    cursor,

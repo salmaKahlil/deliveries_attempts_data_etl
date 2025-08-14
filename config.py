@@ -5,7 +5,8 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path)
 
 # Messaging
 MSG_TEXT = "Hello Data Team"
@@ -104,3 +105,33 @@ DATA_TYPES = {
     "exception_conversationStatus_time": "datetime64[ns]",
     "consignee_rescheduleDate": "datetime64[ns]",
 }
+
+DELIVERIES_ATTEMPTS_COLUMNS = [
+    "id",
+    "delivery_id",
+    "trackingNumber",
+    "createdAt",
+    "updatedAt",
+    "state",
+    "attempt_type",
+    "date",
+    "route_id",
+    "business_id",
+    "business_name",
+    "exception_at",
+    "star_id",
+    "star_name",
+    "country_name",
+    "warehouse_name",
+    "consignee_name",
+    "exception_reason",
+    "exception_whatsAppVerification_time",
+    "exception_fakeAttempt",
+    "exception_whatsAppVerification_verified",
+    "returnGroupId",
+    "star_phone",
+    "exception_whatsAppVerification_fakeAttempt",
+    "conversationStartedSuccessfully",
+    "exception_conversationStatus_time",
+    "consignee_rescheduleDate"
+]
