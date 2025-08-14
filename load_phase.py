@@ -53,7 +53,6 @@ class DataLoader:
             SECRET_ACCESS_KEY '{self.aws_secret_access_key}'
             CSV
             IGNOREHEADER 1
-            TIMEFORMAT 'YYYY-MM-DD HH24:MI:SS';
             """
             cur.execute(copy_query)
             conn.commit()
